@@ -1,7 +1,7 @@
-#include <xf86drm.h>
-#include <xf86drmMode.h>
 #include <libdrm/drm.h>
 #include <libdrm/drm_mode.h>
+#include <xf86drm.h>
+#include <xf86drmMode.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <sys/mman.h>
@@ -25,6 +25,12 @@ struct colors random_color()
 
 	return a;
 }
+
+void page_flip_handler(int fd, unsigned int sequence, unsigned int tv_sec, unsigned int tv_usec, void *user_data)
+{
+    printf("Page filp 1 not implemented %u %u %u", sequence, tv_sec, tv_usec);
+}
+
 
 int main()
 {
@@ -76,35 +82,35 @@ int main()
         break;
     }
     printf("Refresh rate is %ihz\n", resolution->vrefresh);
-    unsigned int handle = 0;
-    unsigned int pitch = 0;
+    drmModeFB *FB1 = (drmModeFB *)malloc(sizeof(drmModeFB));
+    drmModeFB *FB2 = (drmModeFB *)malloc(sizeof(drmModeFB));
     unsigned long size = 0;
     unsigned int handle2 = 0;
     unsigned int pitch2 = 0;
     unsigned long size2 = 0;
     
-    int err = drmModeCreateDumbBuffer(fd, width, height, 32, 0, &handle, &pitch, &size);
+    int err = drmModeCreateDumbBuffer(fd, width, height, 32, 0, &FB1->handle, &FB1->pitch, &size);
     if (err < 0)
     {
         printf("Failed creating framebuffer %i\n", err);
         return -1;
     }
-    err = drmModeCreateDumbBuffer(fd, width, height, 32, 0, &handle2, &pitch2, &size2);
+    err = drmModeCreateDumbBuffer(fd, width, height, 32, 0, &FB2->handle, &FB2->pitch, &size2);
     if (err < 0)
     {
         printf("Failed creating framebuffer 2 %i\n", err);
         return -1;
     }
-    printf("Handle %i, pitch %i, size %u\n", handle, pitch, size);
+    printf("Handle %i, pitch %i, size %u\n", FB1->handle, FB1->pitch, size);
     unsigned int buffer_id = 0;
     unsigned int buffer_id2 = 0;
-    err = drmModeAddFB(fd, width, height, 24, 32, pitch, handle, &buffer_id);
+    err = drmModeAddFB(fd, width, height, 24, 32, FB1->pitch, FB1->handle, &FB1->fb_id);
     if (err < 0)
     {
         printf("Failed creating framebuffer %i\n", err);
         return -1;
     }
-    err = drmModeAddFB(fd, width, height, 24, 32, pitch2, handle2, &buffer_id2);
+    err = drmModeAddFB(fd, width, height, 24, 32, FB2->pitch, FB2->handle, &FB2->fb_id);
     if (err < 0)
     {
         printf("Failed creating framebuffer %i\n", err);
@@ -115,8 +121,8 @@ int main()
     drmModeCrtcPtr crtc = drmModeGetCrtc(fd, encoder->crtc_id);
     unsigned long offset = 0;
     unsigned long offset2 = 0;
-    drmModeMapDumbBuffer(fd, handle, &offset);
-    drmModeMapDumbBuffer(fd, handle2, &offset2);
+    drmModeMapDumbBuffer(fd, FB1->handle, &offset);
+    drmModeMapDumbBuffer(fd, FB2->handle, &offset2);
     char *frame_buffer1 = (char *)mmap(0, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, offset);
     if (frame_buffer1 == MAP_FAILED)
     {
@@ -131,7 +137,8 @@ int main()
     }
     drmSetMaster(fd);
    // drmModeSetCrtc(fd, crtc->crtc_id, 0, 0, 0, NULL, 0, NULL);
-    drmModeSetCrtc(fd, crtc->crtc_id, buffer_id, 0, 0, &conn->connector_id, 1, resolution);
+    drmModeSetCrtc(fd, crtc->crtc_id, FB1->fb_id, 0, 0, &conn->connector_id, 1, resolution);
+    //_drmEventContext ctx = {0}
     int frames_to_write = 0;
     int main_fb = 1;
     int ev = 0;
@@ -174,17 +181,18 @@ int main()
             }
             if (main_fb == 1)
             {
-                printf("page flip returned %i\n", drmModePageFlip(fd, crtc->crtc_id, buffer_id2, DRM_MODE_PAGE_FLIP_EVENT, &ev));
+                printf("page flip returned %i\n", drmModePageFlip(fd, crtc->crtc_id, FB2->fb_id, DRM_MODE_PAGE_FLIP_EVENT, &ev));
                 main_fb = 2;
             }
             else if (main_fb == 2)
             {
-                printf("page flip returned %i\n", drmModePageFlip(fd, crtc->crtc_id, buffer_id, DRM_MODE_PAGE_FLIP_EVENT, &ev));
+                printf("page flip returned %i\n", drmModePageFlip(fd, crtc->crtc_id, FB1->fb_id, DRM_MODE_PAGE_FLIP_EVENT, &ev));
                 main_fb = 1;  
             }
         }
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
+    drmModeFreeCrtc(crtc);
     munmap(frame_buffer1, size);
     munmap(frame_buffer2, size);
     drmDropMaster(fd);
