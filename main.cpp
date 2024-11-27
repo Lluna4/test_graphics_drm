@@ -9,7 +9,15 @@
 #include <string.h>
 #include <chrono>
 #include <thread>
+#include <sys/epoll.h>
+#include <unistd.h>
+float mouse_position_y = 0;
+float mouse_position_x = 0;
 
+float fb1_pos_x = 0;
+float fb1_pos_y = 0;
+float fb2_pos_x = 0;
+float fb2_pos_y = 0;
 struct colors
 {
 	int r, g, b;
@@ -31,6 +39,46 @@ void page_flip_handler(int fd, unsigned int sequence, unsigned int tv_sec, unsig
     printf("Page filp 1 not implemented %u %u %u", sequence, tv_sec, tv_usec);
 }
 
+void add_to_list(int fd, int epfd)
+{
+    struct epoll_event event;
+    event.data.fd = fd;
+    event.events = EPOLLIN;
+    epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &event);
+}
+
+void mouse_read()
+{
+    int fd;
+    if ((fd = open("/dev/input/mice", O_RDONLY)) < 0) 
+    {
+        perror("evdev open");
+        exit(1);
+    }
+    int epfd = epoll_create1(0);
+    add_to_list(fd, epfd);
+    int events_ready = 0;
+    struct epoll_event events[1024];
+    char buf[1024] = {0};
+    signed char y_mov = 0;
+    signed char x_mov = 0;
+    while(1) 
+    {
+        events_ready = epoll_wait(epfd, events, 1024, -1);
+        for (int i = 0; i < events_ready;i++)
+        {
+            read(fd, buf, 4);
+            y_mov = buf[1];
+            x_mov = buf[2];
+            mouse_position_y += x_mov * -1;
+            mouse_position_x += y_mov;
+            printf("x %f y %f\n",mouse_position_x, mouse_position_y);
+	    printf("x_mov %i y_mov %i\n", (int)y_mov, (int)x_mov);
+            
+        }
+        memset(buf, 0, 1024);
+    }
+}
 
 int main()
 {
@@ -74,6 +122,12 @@ int main()
             break;
         }
     }
+    mouse_position_x = width/2;
+    fb1_pos_x = mouse_position_x;
+    fb2_pos_x = mouse_position_x;
+    mouse_position_y = height/2;
+    fb1_pos_y = mouse_position_y;
+    fb2_pos_y = mouse_position_y;
     drmModeModeInfoPtr resolution = 0;
     for (int i = 0; i < conn->count_modes; i++) 
     {
@@ -142,55 +196,75 @@ int main()
     int frames_to_write = 0;
     int main_fb = 1;
     int ev = 0;
+    std::thread mouse_th(mouse_read);
+    mouse_th.detach();
     while (1)
     {
-        if (frames_to_write == 0)
+        for (int x = fb1_pos_x; x < fb1_pos_x + 5; x++)
         {
-            struct colors col = random_color();
-            for (int x = 0; x < width; x++)
+            for (int y = fb1_pos_y; y < fb1_pos_y + 5; y++)
             {
-                for (int y = 0; y < height; y++)
+                int pxl_index = (x + width * y) * 4;
+
+                if (main_fb == 2)
                 {
-                    int pxl_index = (x + width * y) * 4;
-                    unsigned char r = col.b;
-                    unsigned char g = col.g;
-                    unsigned char b = col.r;
-                    if (main_fb == 1)
-                    {
-                        frame_buffer2[pxl_index] = r;
-                        pxl_index++;
-                        frame_buffer2[pxl_index] = g;
-                        pxl_index++;
-                        frame_buffer2[pxl_index] = b;
-                        pxl_index++;
-                        frame_buffer2[pxl_index] = 255;
-                        pxl_index++;
-                    }
-                    else
-                    {
-                        frame_buffer1[pxl_index] = r;
-                        pxl_index++;
-                        frame_buffer1[pxl_index] = g;
-                        pxl_index++;
-                        frame_buffer1[pxl_index] = b;
-                        pxl_index++;
-                        frame_buffer1[pxl_index] = 255;
-                        pxl_index++;     
-                    }
+                    frame_buffer2[pxl_index] = 0;
+                    pxl_index++;
+                    frame_buffer2[pxl_index] = 0;
+                    pxl_index++;
+                    frame_buffer2[pxl_index] = 0;
+                    pxl_index++;
+                    frame_buffer2[pxl_index] = 255;
+                    pxl_index++;
+                }
+                else if (main_fb == 1)
+                {
+                    frame_buffer1[pxl_index] = 0;
+                    pxl_index++;
+                    frame_buffer1[pxl_index] = 0;
+                    pxl_index++;
+                    frame_buffer1[pxl_index] = 0;
+                    pxl_index++;
+                    frame_buffer1[pxl_index] = 255;
+                    pxl_index++;
                 }
             }
-            if (main_fb == 1)
+        }
+        for (int x = mouse_position_x; x < mouse_position_x + 5; x++)
+        {
+            for (int y = mouse_position_y; y < mouse_position_y + 5; y++)
             {
-                printf("page flip returned %i\n", drmModePageFlip(fd, crtc->crtc_id, FB2->fb_id, DRM_MODE_PAGE_FLIP_EVENT, &ev));
-                main_fb = 2;
-            }
-            else if (main_fb == 2)
-            {
-                printf("page flip returned %i\n", drmModePageFlip(fd, crtc->crtc_id, FB1->fb_id, DRM_MODE_PAGE_FLIP_EVENT, &ev));
-                main_fb = 1;  
+                int pxl_index = (x + width * y) * 4;
+
+                if (main_fb == 2)
+                {
+                    frame_buffer2[pxl_index] = 255;
+                    pxl_index++;
+                    frame_buffer2[pxl_index] = 255;
+                    pxl_index++;
+                    frame_buffer2[pxl_index] = 255;
+                    pxl_index++;
+                    frame_buffer2[pxl_index] = 255;
+                    pxl_index++;
+                }
+                else if (main_fb == 1)
+                {
+                    frame_buffer1[pxl_index] = 255;
+                    pxl_index++;
+                    frame_buffer1[pxl_index] = 255;
+                    pxl_index++;
+                    frame_buffer1[pxl_index] = 255;
+                    pxl_index++;
+                    frame_buffer1[pxl_index] = 255;
+                    pxl_index++;
+                }
             }
         }
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+        
+        fb1_pos_x = mouse_position_x;
+        fb1_pos_y = mouse_position_y;
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
     }
     drmModeFreeCrtc(crtc);
     munmap(frame_buffer1, size);
