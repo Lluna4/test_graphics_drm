@@ -37,6 +37,7 @@ struct colors random_color()
 void page_flip_handler(int fd, unsigned int sequence, unsigned int tv_sec, unsigned int tv_usec, void *user_data)
 {
     printf("Page filp 1 not implemented %u %u %u", sequence, tv_sec, tv_usec);
+    *(int *)(user_data) = 1;
 }
 
 void add_to_list(int fd, int epfd)
@@ -189,82 +190,122 @@ int main()
         printf("Mapping failed\n");
         return -1;
     }
-    drmSetMaster(fd);
-   // drmModeSetCrtc(fd, crtc->crtc_id, 0, 0, 0, NULL, 0, NULL);
+    if (drmSetMaster(fd)!= 0)
+    {
+        printf("Setting to master failed\n");
+        return 0;
+    }
+    //drmModeSetCrtc(fd, crtc->crtc_id, 0, 0, 0, NULL, 0, NULL);
     drmModeSetCrtc(fd, crtc->crtc_id, FB1->fb_id, 0, 0, &conn->connector_id, 1, resolution);
-    //_drmEventContext ctx = {0}
+    drmEventContext evctx = {
+        .version = DRM_EVENT_CONTEXT_VERSION,
+        .page_flip_handler = page_flip_handler,
+    };
     int frames_to_write = 0;
     int main_fb = 1;
-    int ev = 0;
+    int ev = 1;
     std::thread mouse_th(mouse_read);
     mouse_th.detach();
+    int epfd = epoll_create1(0);
+    add_to_list(fd, epfd);
+    int events_ready = 0;
+    struct epoll_event events[1024];
     while (1)
     {
-        for (int x = fb1_pos_x; x < fb1_pos_x + 5; x++)
+        if (ev == 1)
         {
-            for (int y = fb1_pos_y; y < fb1_pos_y + 5; y++)
+            ev = 0;
+            int m_pos_x = 0;
+            int m_pos_y = 0;
+            if (main_fb == 1)
             {
-                int pxl_index = (x + width * y) * 4;
+                m_pos_x = fb2_pos_x;
+                m_pos_y = fb2_pos_y;
+            }
+            else if (main_fb == 2)
+            {
+                m_pos_x = fb1_pos_x;
+                m_pos_y = fb1_pos_y;
+            }
+            for (int x = m_pos_x; x < m_pos_x + 5; x++)
+            {
+                for (int y = m_pos_y; y < m_pos_y + 5; y++)
+                {
+                    int pxl_index = (x + width * y) * 4;
 
-                if (main_fb == 2)
-                {
-                    frame_buffer2[pxl_index] = 0;
-                    pxl_index++;
-                    frame_buffer2[pxl_index] = 0;
-                    pxl_index++;
-                    frame_buffer2[pxl_index] = 0;
-                    pxl_index++;
-                    frame_buffer2[pxl_index] = 255;
-                    pxl_index++;
-                }
-                else if (main_fb == 1)
-                {
-                    frame_buffer1[pxl_index] = 0;
-                    pxl_index++;
-                    frame_buffer1[pxl_index] = 0;
-                    pxl_index++;
-                    frame_buffer1[pxl_index] = 0;
-                    pxl_index++;
-                    frame_buffer1[pxl_index] = 255;
-                    pxl_index++;
+                    if (main_fb == 1)
+                    {
+                        frame_buffer2[pxl_index] = 0;
+                        pxl_index++;
+                        frame_buffer2[pxl_index] = 0;
+                        pxl_index++;
+                        frame_buffer2[pxl_index] = 0;
+                        pxl_index++;
+                        frame_buffer2[pxl_index] = 255;
+                        pxl_index++;
+                    }
+                    else if (main_fb == 2)
+                    {
+                        frame_buffer1[pxl_index] = 0;
+                        pxl_index++;
+                        frame_buffer1[pxl_index] = 0;
+                        pxl_index++;
+                        frame_buffer1[pxl_index] = 0;
+                        pxl_index++;
+                        frame_buffer1[pxl_index] = 255;
+                        pxl_index++;
+                    }
                 }
             }
-        }
-        for (int x = mouse_position_x; x < mouse_position_x + 5; x++)
-        {
-            for (int y = mouse_position_y; y < mouse_position_y + 5; y++)
+            for (int x = mouse_position_x; x < mouse_position_x + 5; x++)
             {
-                int pxl_index = (x + width * y) * 4;
+                for (int y = mouse_position_y; y < mouse_position_y + 5; y++)
+                {
+                    int pxl_index = (x + width * y) * 4;
 
-                if (main_fb == 2)
-                {
-                    frame_buffer2[pxl_index] = 255;
-                    pxl_index++;
-                    frame_buffer2[pxl_index] = 255;
-                    pxl_index++;
-                    frame_buffer2[pxl_index] = 255;
-                    pxl_index++;
-                    frame_buffer2[pxl_index] = 255;
-                    pxl_index++;
-                }
-                else if (main_fb == 1)
-                {
-                    frame_buffer1[pxl_index] = 255;
-                    pxl_index++;
-                    frame_buffer1[pxl_index] = 255;
-                    pxl_index++;
-                    frame_buffer1[pxl_index] = 255;
-                    pxl_index++;
-                    frame_buffer1[pxl_index] = 255;
-                    pxl_index++;
+                    if (main_fb == 1)
+                    {
+                        frame_buffer2[pxl_index] = 255;
+                        pxl_index++;
+                        frame_buffer2[pxl_index] = 255;
+                        pxl_index++;
+                        frame_buffer2[pxl_index] = 255;
+                        pxl_index++;
+                        frame_buffer2[pxl_index] = 255;
+                        pxl_index++;
+                    }
+                    else if (main_fb == 2)
+                    {
+                        frame_buffer1[pxl_index] = 255;
+                        pxl_index++;
+                        frame_buffer1[pxl_index] = 255;
+                        pxl_index++;
+                        frame_buffer1[pxl_index] = 255;
+                        pxl_index++;
+                        frame_buffer1[pxl_index] = 255;
+                        pxl_index++;
+                    }
                 }
             }
+            if (main_fb == 1)
+            {
+                printf("page flip returned %i\n", drmModePageFlip(fd, crtc->crtc_id, FB2->fb_id, DRM_MODE_PAGE_FLIP_EVENT, &ev));
+                main_fb = 2;
+                fb2_pos_x = mouse_position_x;
+                fb2_pos_y = mouse_position_y;
+                events_ready = epoll_wait(epfd, events, 1024, -1);
+                drmHandleEvent(fd, &evctx);
+            }
+            else if (main_fb == 2)
+            {
+                printf("page flip returned %i\n", drmModePageFlip(fd, crtc->crtc_id, FB1->fb_id, DRM_MODE_PAGE_FLIP_EVENT, &ev));
+                main_fb = 1;
+                fb1_pos_x = mouse_position_x;
+                fb1_pos_y = mouse_position_y;
+                events_ready = epoll_wait(epfd, events, 1024, -1);
+                drmHandleEvent(fd, &evctx);
+            } 
         }
-        
-        fb1_pos_x = mouse_position_x;
-        fb1_pos_y = mouse_position_y;
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(16));
     }
     drmModeFreeCrtc(crtc);
     munmap(frame_buffer1, size);
