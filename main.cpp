@@ -36,8 +36,7 @@ struct colors random_color()
 
 void page_flip_handler(int fd, unsigned int sequence, unsigned int tv_sec, unsigned int tv_usec, void *user_data)
 {
-    printf("Page filp 1 not implemented %u %u %u", sequence, tv_sec, tv_usec);
-    *(int *)(user_data) = 1;
+    printf("%u %u %u\n", sequence, tv_sec, tv_usec);
 }
 
 void add_to_list(int fd, int epfd)
@@ -65,20 +64,77 @@ void mouse_read()
     signed char x_mov = 0;
     while(1) 
     {
+        int status = 0;
         events_ready = epoll_wait(epfd, events, 1024, -1);
         for (int i = 0; i < events_ready;i++)
         {
-            read(fd, buf, 4);
+            status = read(fd, buf, 4);
+            if (status <= 0)
+            {
+                printf("Mouse handler crashed! Read failed\n");
+                return;
+            }
             y_mov = buf[1];
             x_mov = buf[2];
             mouse_position_y += x_mov * -1;
             mouse_position_x += y_mov;
-            printf("x %f y %f\n",mouse_position_x, mouse_position_y);
-	    printf("x_mov %i y_mov %i\n", (int)y_mov, (int)x_mov);
+            //printf("x %f y %f\n",mouse_position_x, mouse_position_y);
+	        //printf("x_mov %i y_mov %i\n", (int)y_mov, (int)x_mov);
             
         }
-        memset(buf, 0, 1024);
+        memset(buf, 0, 4);
     }
+}
+
+void delete_cursor(int m_pos_x, int m_pos_y, int width ,char *framebuffer)
+{
+    for (int x = m_pos_x; x < m_pos_x + 5; x++)
+    {
+        for (int y = m_pos_y; y < m_pos_y + 5; y++)
+        {
+            int pxl_index = (x + width * y) * 4;
+
+            framebuffer[pxl_index] = 0;
+            pxl_index++;
+            framebuffer[pxl_index] = 0;
+            pxl_index++;
+            framebuffer[pxl_index] = 0;
+            pxl_index++;
+            framebuffer[pxl_index] = 255;
+            pxl_index++;
+        }
+    }
+}
+
+void draw_cursor(int m_pos_x, int m_pos_y, int width ,char *framebuffer)
+{
+    for (int x = m_pos_x; x < m_pos_x + 5; x++)
+    {
+        for (int y = m_pos_y; y < m_pos_y + 5; y++)
+        {
+            int pxl_index = (x + width * y) * 4;
+
+            framebuffer[pxl_index] = 255;
+            pxl_index++;
+            framebuffer[pxl_index] = 255;
+            pxl_index++;
+            framebuffer[pxl_index] = 255;
+            pxl_index++;
+            framebuffer[pxl_index] = 255;
+            pxl_index++;
+        }
+    }
+}
+
+void wait_ep(int epfd, int fd)
+{
+    struct epoll_event events[1024];
+    drmEventContext evctx = {
+        .version = DRM_EVENT_CONTEXT_VERSION,
+        .page_flip_handler = page_flip_handler,
+    };
+    epoll_wait(epfd, events, 1024, -1);
+    drmHandleEvent(fd, &evctx);
 }
 
 int main()
@@ -210,102 +266,44 @@ int main()
     add_to_list(fd, epfd);
     int events_ready = 0;
     struct epoll_event events[1024];
+    int f_number = 0;
     while (1)
     {
-        if (ev == 1)
+        printf("Frame: %i\n", f_number);
+        if (mouse_position_x < 0)
+            mouse_position_x = 0;
+        else if (mouse_position_x > width - 5)
+            mouse_position_x = width - 5;
+        if (mouse_position_y < 0)
+            mouse_position_y = 0;
+        else if (mouse_position_y > height - 5)
+            mouse_position_y = height - 5;
+        ev = 0;
+        
+        if (main_fb == 1)
         {
-            ev = 0;
-            int m_pos_x = 0;
-            int m_pos_y = 0;
-            if (main_fb == 1)
-            {
-                m_pos_x = fb2_pos_x;
-                m_pos_y = fb2_pos_y;
-            }
-            else if (main_fb == 2)
-            {
-                m_pos_x = fb1_pos_x;
-                m_pos_y = fb1_pos_y;
-            }
-            for (int x = m_pos_x; x < m_pos_x + 5; x++)
-            {
-                for (int y = m_pos_y; y < m_pos_y + 5; y++)
-                {
-                    int pxl_index = (x + width * y) * 4;
+            delete_cursor(fb2_pos_x, fb2_pos_y, width, frame_buffer2);
+            draw_cursor(mouse_position_x, mouse_position_y, width, frame_buffer2);
+            fb2_pos_x = mouse_position_x;
+            fb2_pos_y = mouse_position_y;
+            if (f_number > 0)
+                wait_ep(epfd, fd);
+            printf("page flip returned %i\n", drmModePageFlip(fd, crtc->crtc_id, FB2->fb_id, DRM_MODE_PAGE_FLIP_EVENT, &ev));
+            main_fb = 2;
 
-                    if (main_fb == 1)
-                    {
-                        frame_buffer2[pxl_index] = 0;
-                        pxl_index++;
-                        frame_buffer2[pxl_index] = 0;
-                        pxl_index++;
-                        frame_buffer2[pxl_index] = 0;
-                        pxl_index++;
-                        frame_buffer2[pxl_index] = 255;
-                        pxl_index++;
-                    }
-                    else if (main_fb == 2)
-                    {
-                        frame_buffer1[pxl_index] = 0;
-                        pxl_index++;
-                        frame_buffer1[pxl_index] = 0;
-                        pxl_index++;
-                        frame_buffer1[pxl_index] = 0;
-                        pxl_index++;
-                        frame_buffer1[pxl_index] = 255;
-                        pxl_index++;
-                    }
-                }
-            }
-            for (int x = mouse_position_x; x < mouse_position_x + 5; x++)
-            {
-                for (int y = mouse_position_y; y < mouse_position_y + 5; y++)
-                {
-                    int pxl_index = (x + width * y) * 4;
-
-                    if (main_fb == 1)
-                    {
-                        frame_buffer2[pxl_index] = 255;
-                        pxl_index++;
-                        frame_buffer2[pxl_index] = 255;
-                        pxl_index++;
-                        frame_buffer2[pxl_index] = 255;
-                        pxl_index++;
-                        frame_buffer2[pxl_index] = 255;
-                        pxl_index++;
-                    }
-                    else if (main_fb == 2)
-                    {
-                        frame_buffer1[pxl_index] = 255;
-                        pxl_index++;
-                        frame_buffer1[pxl_index] = 255;
-                        pxl_index++;
-                        frame_buffer1[pxl_index] = 255;
-                        pxl_index++;
-                        frame_buffer1[pxl_index] = 255;
-                        pxl_index++;
-                    }
-                }
-            }
-            if (main_fb == 1)
-            {
-                printf("page flip returned %i\n", drmModePageFlip(fd, crtc->crtc_id, FB2->fb_id, DRM_MODE_PAGE_FLIP_EVENT, &ev));
-                main_fb = 2;
-                fb2_pos_x = mouse_position_x;
-                fb2_pos_y = mouse_position_y;
-                events_ready = epoll_wait(epfd, events, 1024, -1);
-                drmHandleEvent(fd, &evctx);
-            }
-            else if (main_fb == 2)
-            {
-                printf("page flip returned %i\n", drmModePageFlip(fd, crtc->crtc_id, FB1->fb_id, DRM_MODE_PAGE_FLIP_EVENT, &ev));
-                main_fb = 1;
-                fb1_pos_x = mouse_position_x;
-                fb1_pos_y = mouse_position_y;
-                events_ready = epoll_wait(epfd, events, 1024, -1);
-                drmHandleEvent(fd, &evctx);
-            } 
+            
         }
+        else if (main_fb == 2)
+        {
+            delete_cursor(fb1_pos_x, fb1_pos_y, width, frame_buffer1);
+            draw_cursor(mouse_position_x, mouse_position_y, width, frame_buffer1);
+            fb1_pos_x = mouse_position_x;
+            fb1_pos_y = mouse_position_y;
+            wait_ep(epfd, fd);
+            printf("page flip returned %i\n", drmModePageFlip(fd, crtc->crtc_id, FB1->fb_id, DRM_MODE_PAGE_FLIP_EVENT, &ev));
+            main_fb = 1;
+        } 
+        f_number++;
     }
     drmModeFreeCrtc(crtc);
     munmap(frame_buffer1, size);
