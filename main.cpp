@@ -7,21 +7,31 @@
 #include <sys/mman.h>
 #include <stdlib.h>
 #include <string.h>
-#include <chrono>
+#include <vector>
 #include <thread>
 #include <sys/epoll.h>
 #include <unistd.h>
-float mouse_position_y = 0;
-float mouse_position_x = 0;
 
 float fb1_pos_x = 0;
 float fb1_pos_y = 0;
 float fb2_pos_x = 0;
 float fb2_pos_y = 0;
+float lerp_t = 1.0f;
 struct colors
 {
 	int r, g, b;
 };
+
+struct position
+{
+    float x, y;
+};
+
+position prev_mouse_fb1 = {0};
+position prev_mouse_fb2 = {0};
+position prev_mouse_abs = {0};
+position target_mouse = {0};
+position next_mouse = {0};
 
 struct colors random_color()
 {
@@ -89,6 +99,11 @@ void draw_cursor(int m_pos_x, int m_pos_y, int width ,char *framebuffer)
     }
 }
 
+float lerp(float v0, float v1, float t) 
+{
+    return (1 - t) * v0 + t * v1;
+}
+
 void mouse_read()
 {
     int fd;
@@ -118,8 +133,9 @@ void mouse_read()
             }
             y_mov = buf[1];
             x_mov = buf[2];
-            mouse_position_y += x_mov * -1;
-            mouse_position_x += y_mov;
+            
+            next_mouse.x = next_mouse.x + y_mov;
+            next_mouse.y = next_mouse.y + (x_mov * -1);
             //printf("x %f y %f\n",mouse_position_x, mouse_position_y);
 	        //printf("x_mov %i y_mov %i\n", (int)y_mov, (int)x_mov);
             
@@ -128,10 +144,7 @@ void mouse_read()
     }
 }
 
-float lerp(float v0, float v1, float t) 
-{
-    return (1 - t) * v0 + t * v1;
-}
+
 
 void wait_ep(int epfd, int fd)
 {
@@ -186,12 +199,12 @@ int main()
             break;
         }
     }
-    mouse_position_x = width/2;
-    fb1_pos_x = mouse_position_x;
-    fb2_pos_x = mouse_position_x;
-    mouse_position_y = height/2;
-    fb1_pos_y = mouse_position_y;
-    fb2_pos_y = mouse_position_y;
+    next_mouse.x = width/2;
+    next_mouse.y = height/2;
+    prev_mouse_fb1 = next_mouse;
+    prev_mouse_fb2 = next_mouse;
+    prev_mouse_abs = next_mouse;
+    target_mouse = next_mouse;
     drmModeModeInfoPtr resolution = 0;
     for (int i = 0; i < conn->count_modes; i++) 
     {
@@ -277,6 +290,7 @@ int main()
     while (1)
     {
         printf("Frame: %i\n", f_number);
+        /*
         if (mouse_position_x < 0)
             mouse_position_x = 0;
         else if (mouse_position_x > width - 5)
@@ -284,40 +298,46 @@ int main()
         if (mouse_position_y < 0)
             mouse_position_y = 0;
         else if (mouse_position_y > height - 5)
-            mouse_position_y = height - 5;
-        ev = 0;
+            mouse_position_y = height - 5;*/
         
         if (main_fb == 1)
         {
-            delete_cursor(fb2_pos_x, fb2_pos_y, width, frame_buffer2);
-            int prev_x = mouse_position_x;
-            int prev_y = mouse_position_y;
-            mouse_position_x = lerp(fb1_pos_x, mouse_position_x, 0.3);
-            mouse_position_y = lerp(fb1_pos_y, mouse_position_y, 0.3);
-            draw_cursor(mouse_position_x, mouse_position_y, width, frame_buffer2);
-            fb2_pos_x = mouse_position_x;
-            fb2_pos_y = mouse_position_y;
-            mouse_position_x = prev_x;
-            mouse_position_y = prev_y;
+            delete_cursor(prev_mouse_fb2.x, prev_mouse_fb2.y, width, frame_buffer2);
+            float new_x = lerp(prev_mouse_abs.x, target_mouse.x, lerp_t);
+            float new_y = lerp(prev_mouse_abs.y, target_mouse.y, lerp_t);
+            draw_cursor(new_x, new_y, width, frame_buffer2);
+            prev_mouse_fb2.x = new_x;
+            prev_mouse_fb2.y = new_y;
+            lerp_t += 0.5f;
+            if (lerp_t >= 1.0f)
+            {
+                prev_mouse_abs = target_mouse;
+                target_mouse = next_mouse;
+                lerp_t = 0.1f;
+            }
+            // first frame doesnt need to wait for the last frame to be completed
             if (f_number > 0)
                 wait_ep(epfd, fd);
             printf("page flip returned %i\n", drmModePageFlip(fd, crtc->crtc_id, FB2->fb_id, DRM_MODE_PAGE_FLIP_EVENT, &ev));
             main_fb = 2;
-
+            
             
         }
         else if (main_fb == 2)
         {
-            delete_cursor(fb1_pos_x, fb1_pos_y, width, frame_buffer1);
-            int prev_x = mouse_position_x;
-            int prev_y = mouse_position_y;
-            mouse_position_x = lerp(fb2_pos_x, mouse_position_x, 0.3);
-            mouse_position_y = lerp(fb2_pos_y, mouse_position_y, 0.3);
-            draw_cursor(mouse_position_x, mouse_position_y, width, frame_buffer1);
-            fb1_pos_x = mouse_position_x;
-            fb1_pos_y = mouse_position_y;
-            mouse_position_x = prev_x;
-            mouse_position_y = prev_y;
+            delete_cursor(prev_mouse_fb1.x, prev_mouse_fb1.y, width, frame_buffer1);
+            float new_x = lerp(prev_mouse_abs.x, target_mouse.x, lerp_t);
+            float new_y = lerp(prev_mouse_abs.y, target_mouse.y, lerp_t);
+            draw_cursor(new_x, new_y, width, frame_buffer1);
+            prev_mouse_fb1.x = new_x;
+            prev_mouse_fb1.y = new_y;
+            lerp_t += 0.5f;
+            if (lerp_t >= 1.0f)
+            {
+                prev_mouse_abs = target_mouse;
+                target_mouse = next_mouse;
+                lerp_t = 0.1f;
+            }
             wait_ep(epfd, fd);
             printf("page flip returned %i\n", drmModePageFlip(fd, crtc->crtc_id, FB1->fb_id, DRM_MODE_PAGE_FLIP_EVENT, &ev));
             main_fb = 1;
