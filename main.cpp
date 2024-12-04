@@ -47,6 +47,48 @@ void add_to_list(int fd, int epfd)
     epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &event);
 }
 
+
+
+void delete_cursor(int m_pos_x, int m_pos_y, int width ,char *framebuffer)
+{
+    for (int x = m_pos_x; x < m_pos_x + 10; x++)
+    {
+        for (int y = m_pos_y; y < m_pos_y + 10; y++)
+        {
+            int pxl_index = (x + width * y) * 4;
+
+            framebuffer[pxl_index] = 0;
+            pxl_index++;
+            framebuffer[pxl_index] = 0;
+            pxl_index++;
+            framebuffer[pxl_index] = 0;
+            pxl_index++;
+            framebuffer[pxl_index] = 255;
+            pxl_index++;
+        }
+    }
+}
+
+void draw_cursor(int m_pos_x, int m_pos_y, int width ,char *framebuffer)
+{
+    for (int x = m_pos_x; x < m_pos_x + 10; x++)
+    {
+        for (int y = m_pos_y; y < m_pos_y + 10; y++)
+        {
+            int pxl_index = (x + width * y) * 4;
+
+            framebuffer[pxl_index] = 255;
+            pxl_index++;
+            framebuffer[pxl_index] = 255;
+            pxl_index++;
+            framebuffer[pxl_index] = 255;
+            pxl_index++;
+            framebuffer[pxl_index] = 255;
+            pxl_index++;
+        }
+    }
+}
+
 void mouse_read()
 {
     int fd;
@@ -86,44 +128,9 @@ void mouse_read()
     }
 }
 
-void delete_cursor(int m_pos_x, int m_pos_y, int width ,char *framebuffer)
+float lerp(float v0, float v1, float t) 
 {
-    for (int x = m_pos_x; x < m_pos_x + 5; x++)
-    {
-        for (int y = m_pos_y; y < m_pos_y + 5; y++)
-        {
-            int pxl_index = (x + width * y) * 4;
-
-            framebuffer[pxl_index] = 0;
-            pxl_index++;
-            framebuffer[pxl_index] = 0;
-            pxl_index++;
-            framebuffer[pxl_index] = 0;
-            pxl_index++;
-            framebuffer[pxl_index] = 255;
-            pxl_index++;
-        }
-    }
-}
-
-void draw_cursor(int m_pos_x, int m_pos_y, int width ,char *framebuffer)
-{
-    for (int x = m_pos_x; x < m_pos_x + 5; x++)
-    {
-        for (int y = m_pos_y; y < m_pos_y + 5; y++)
-        {
-            int pxl_index = (x + width * y) * 4;
-
-            framebuffer[pxl_index] = 255;
-            pxl_index++;
-            framebuffer[pxl_index] = 255;
-            pxl_index++;
-            framebuffer[pxl_index] = 255;
-            pxl_index++;
-            framebuffer[pxl_index] = 255;
-            pxl_index++;
-        }
-    }
+    return (1 - t) * v0 + t * v1;
 }
 
 void wait_ep(int epfd, int fd)
@@ -283,9 +290,15 @@ int main()
         if (main_fb == 1)
         {
             delete_cursor(fb2_pos_x, fb2_pos_y, width, frame_buffer2);
+            int prev_x = mouse_position_x;
+            int prev_y = mouse_position_y;
+            mouse_position_x = lerp(fb1_pos_x, mouse_position_x, 0.3);
+            mouse_position_y = lerp(fb1_pos_y, mouse_position_y, 0.3);
             draw_cursor(mouse_position_x, mouse_position_y, width, frame_buffer2);
             fb2_pos_x = mouse_position_x;
             fb2_pos_y = mouse_position_y;
+            mouse_position_x = prev_x;
+            mouse_position_y = prev_y;
             if (f_number > 0)
                 wait_ep(epfd, fd);
             printf("page flip returned %i\n", drmModePageFlip(fd, crtc->crtc_id, FB2->fb_id, DRM_MODE_PAGE_FLIP_EVENT, &ev));
@@ -296,9 +309,15 @@ int main()
         else if (main_fb == 2)
         {
             delete_cursor(fb1_pos_x, fb1_pos_y, width, frame_buffer1);
+            int prev_x = mouse_position_x;
+            int prev_y = mouse_position_y;
+            mouse_position_x = lerp(fb2_pos_x, mouse_position_x, 0.3);
+            mouse_position_y = lerp(fb2_pos_y, mouse_position_y, 0.3);
             draw_cursor(mouse_position_x, mouse_position_y, width, frame_buffer1);
             fb1_pos_x = mouse_position_x;
             fb1_pos_y = mouse_position_y;
+            mouse_position_x = prev_x;
+            mouse_position_y = prev_y;
             wait_ep(epfd, fd);
             printf("page flip returned %i\n", drmModePageFlip(fd, crtc->crtc_id, FB1->fb_id, DRM_MODE_PAGE_FLIP_EVENT, &ev));
             main_fb = 1;
