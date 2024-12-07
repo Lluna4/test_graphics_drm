@@ -232,7 +232,7 @@ int main(int argc, char *argv[])
     {
         for (int i = 1; i < argc; i++)
         {
-            if (strcmp(argv[i], "-r") && i + 1 < argc)
+            if (strcmp(argv[i], "-r") == 0 && i + 1 < argc)
             {
                 target_refresh = atoi(argv[i+1]);
             }
