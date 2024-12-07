@@ -7,10 +7,11 @@
 #include <sys/mman.h>
 #include <stdlib.h>
 #include <string.h>
-#include <vector>
 #include <thread>
 #include <sys/epoll.h>
 #include <unistd.h>
+#include <linux/input.h>
+#include <filesystem>
 
 float fb1_pos_x = 0;
 float fb1_pos_y = 0;
@@ -32,6 +33,8 @@ position prev_mouse_fb2 = {0};
 position prev_mouse_abs = {0};
 position target_mouse = {0};
 position next_mouse = {0};
+int width = 0;
+int height = 0;
 
 struct colors random_color()
 {
@@ -109,7 +112,7 @@ void mouse_read()
     int fd;
     if ((fd = open("/dev/input/mice", O_RDONLY)) < 0) 
     {
-        perror("evdev open");
+        printf("Cant open mouse\n");
         exit(1);
     }
     int epfd = epoll_create1(0);
@@ -119,6 +122,7 @@ void mouse_read()
     char buf[1024] = {0};
     signed char y_mov = 0;
     signed char x_mov = 0;
+    unsigned char button_state = 0;
     while(1) 
     {
         int status = 0;
@@ -131,11 +135,28 @@ void mouse_read()
                 printf("Mouse handler crashed! Read failed\n");
                 return;
             }
+            button_state = buf[0];
             y_mov = buf[1];
             x_mov = buf[2];
             
+            if ((button_state & 0b1) != 0)
+                printf("Left mouse button pressed\n");
+            if ((button_state & 0b10) != 0)
+                printf("Right mouse button pressed\n");
+            if ((button_state & 0b100) != 0)
+                printf("Middle mouse button pressed\n");
+
             next_mouse.x = next_mouse.x + y_mov;
             next_mouse.y = next_mouse.y + (x_mov * -1);
+
+            if (next_mouse.x < 0)
+                next_mouse.x = 0;
+            else if (next_mouse.x > width - 10)
+                next_mouse.x = width - 10;
+            if (next_mouse.y < 0)
+                next_mouse.y = 0;
+            else if (next_mouse.y > height - 10)
+                next_mouse.y = height - 10;
             //printf("x %f y %f\n",mouse_position_x, mouse_position_y);
 	        //printf("x_mov %i y_mov %i\n", (int)y_mov, (int)x_mov);
             
@@ -144,7 +165,46 @@ void mouse_read()
     }
 }
 
-
+void keyboard_read()
+{
+    int fd = -2;
+    for (const auto & entry : std::filesystem::directory_iterator("/dev/input/by-id"))
+    {
+        if (strstr(entry.path().filename().c_str(), "Keyboard") != NULL && strstr(entry.path().filename().c_str(), "kbd") != NULL)
+            fd = open(entry.path().c_str(), O_RDONLY);
+    }
+    if (fd == -2)
+    {
+        for (const auto & entry : std::filesystem::directory_iterator("/dev/input/by-path"))
+        {
+            if (strstr(entry.path().filename().c_str(), "kbd") != NULL)
+                fd = open(entry.path().c_str(), O_RDONLY);
+        }
+    }
+    if (fd < 0)
+    {
+        printf("Opening a keyboard failed!\n");
+        return;
+    }
+    input_event ev = {0};
+    int index = 0;
+    int status = 0;
+    while (1)
+    {
+        status = read(fd, &ev, sizeof(struct input_event));
+        if (ev.type == EV_KEY) 
+        {
+            if (ev.value == 1) 
+            {
+                printf("Key %d pressed\n", ev.code);
+            } 
+            else if (ev.value == 0) 
+            {
+                printf("Key %d released\n", ev.code);
+            }
+        }
+    }
+}
 
 void wait_ep(int epfd, int fd)
 {
@@ -157,11 +217,21 @@ void wait_ep(int epfd, int fd)
     drmHandleEvent(fd, &evctx);
 }
 
-int main()
+int main(int argc, char *argv[])
 {
     using clock = std::chrono::system_clock;
     using ms = std::chrono::duration<double, std::milli>;
-    srandom(time(NULL));
+    int target_refresh = 60;
+    if (argc > 1)
+    {
+        for (int i = 1; i < argc; i++)
+        {
+            if (strcmp(argv[i], "-r") && i + 1 < argc)
+            {
+                target_refresh = atoi(argv[i+1]);
+            }
+        }
+    }
     int fd = open("/dev/dri/card1", O_RDWR | O_NONBLOCK);
 
     if (fd < 0)
@@ -188,8 +258,6 @@ int main()
             break;
         printf("Connector is %s-%u height %i width %i\n", drmModeGetConnectorTypeName(conn->connector_type), conn->connector_type_id, conn->mmHeight, conn->mmWidth);
     }
-    int height = 0;
-    int width = 0;
     for (int i = 0; i < conn->count_modes; i++) 
     {
         if (conn->modes[i].type & DRM_MODE_TYPE_PREFERRED)
@@ -209,8 +277,8 @@ int main()
     for (int i = 0; i < conn->count_modes; i++) 
     {
         resolution = &conn->modes[i];
-        if (resolution->type & DRM_MODE_TYPE_PREFERRED)
-        break;
+        if (resolution->vrefresh == target_refresh)
+            break;
     }
     printf("Refresh rate is %ihz\n", resolution->vrefresh);
     drmModeFB *FB1 = (drmModeFB *)malloc(sizeof(drmModeFB));
@@ -282,6 +350,8 @@ int main()
     int ev = 1;
     std::thread mouse_th(mouse_read);
     mouse_th.detach();
+    std::thread kbd_th(keyboard_read);
+    kbd_th.detach();
     int epfd = epoll_create1(0);
     add_to_list(fd, epfd);
     int events_ready = 0;
@@ -290,15 +360,6 @@ int main()
     while (1)
     {
         printf("Frame: %i\n", f_number);
-        /*
-        if (mouse_position_x < 0)
-            mouse_position_x = 0;
-        else if (mouse_position_x > width - 5)
-            mouse_position_x = width - 5;
-        if (mouse_position_y < 0)
-            mouse_position_y = 0;
-        else if (mouse_position_y > height - 5)
-            mouse_position_y = height - 5;*/
         
         if (main_fb == 1)
         {
@@ -308,20 +369,11 @@ int main()
             draw_cursor(new_x, new_y, width, frame_buffer2);
             prev_mouse_fb2.x = new_x;
             prev_mouse_fb2.y = new_y;
-            lerp_t += 0.5f;
-            if (lerp_t >= 1.0f)
-            {
-                prev_mouse_abs = target_mouse;
-                target_mouse = next_mouse;
-                lerp_t = 0.1f;
-            }
             // first frame doesnt need to wait for the last frame to be completed
             if (f_number > 0)
                 wait_ep(epfd, fd);
             printf("page flip returned %i\n", drmModePageFlip(fd, crtc->crtc_id, FB2->fb_id, DRM_MODE_PAGE_FLIP_EVENT, &ev));
             main_fb = 2;
-            
-            
         }
         else if (main_fb == 2)
         {
@@ -331,17 +383,17 @@ int main()
             draw_cursor(new_x, new_y, width, frame_buffer1);
             prev_mouse_fb1.x = new_x;
             prev_mouse_fb1.y = new_y;
-            lerp_t += 0.5f;
-            if (lerp_t >= 1.0f)
-            {
-                prev_mouse_abs = target_mouse;
-                target_mouse = next_mouse;
-                lerp_t = 0.1f;
-            }
             wait_ep(epfd, fd);
             printf("page flip returned %i\n", drmModePageFlip(fd, crtc->crtc_id, FB1->fb_id, DRM_MODE_PAGE_FLIP_EVENT, &ev));
             main_fb = 1;
         } 
+        lerp_t += 0.5f;
+        if (lerp_t >= 1.0f)
+        {
+            prev_mouse_abs = target_mouse;
+            target_mouse = next_mouse;
+            lerp_t = 0.0f;
+        }
         f_number++;
     }
     drmModeFreeCrtc(crtc);
