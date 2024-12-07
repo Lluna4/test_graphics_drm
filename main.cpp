@@ -171,14 +171,20 @@ void keyboard_read()
     for (const auto & entry : std::filesystem::directory_iterator("/dev/input/by-id"))
     {
         if (strstr(entry.path().filename().c_str(), "Keyboard") != NULL && strstr(entry.path().filename().c_str(), "kbd") != NULL)
+        {
             fd = open(entry.path().c_str(), O_RDONLY);
+            break;
+        }
     }
     if (fd == -2)
     {
         for (const auto & entry : std::filesystem::directory_iterator("/dev/input/by-path"))
         {
             if (strstr(entry.path().filename().c_str(), "kbd") != NULL)
+            {
                 fd = open(entry.path().c_str(), O_RDONLY);
+                break;
+            }
         }
     }
     if (fd < 0)
