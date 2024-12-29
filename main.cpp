@@ -1,56 +1,43 @@
-#include <libdrm/drm.h>
-#include <libdrm/drm_mode.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
+#include <gbm.h>
 #include <fcntl.h>
-#include <stdio.h>
-#include <sys/mman.h>
 #include <stdlib.h>
+#include <time.h>
+#include <stdio.h>
+#include <errno.h>
 #include <string.h>
-#include <thread>
 #include <sys/epoll.h>
-#include <unistd.h>
-#include <linux/input.h>
-#include <filesystem>
 
-float fb1_pos_x = 0;
-float fb1_pos_y = 0;
-float fb2_pos_x = 0;
-float fb2_pos_y = 0;
-float lerp_t = 1.0f;
-struct colors
-{
-	int r, g, b;
-};
+#define GL_GLEXT_PROTOTYPES 1
+#include <GLES2/gl2.h>
+#include <GLES2/gl2ext.h>
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
 
-struct position
-{
-    float x, y;
-};
-
-position prev_mouse_fb1 = {0};
-position prev_mouse_fb2 = {0};
-position prev_mouse_abs = {0};
-position target_mouse = {0};
-position next_mouse = {0};
-int width = 0;
 int height = 0;
+int width = 0; 
+int drmfb = 0;
 
-struct colors random_color()
-{
-	int r, g, b;
-	r = random()%256;
-	g = random()%256;
-	b = random()%256;
-	struct colors a = {r, g, b};
+static const EGLint context_attribs[] = {
+    EGL_CONTEXT_CLIENT_VERSION, 2,
+    EGL_NONE
+};
 
-	return a;
-}
+static const EGLint config_attribs[] = {
+    EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+    EGL_RED_SIZE, 1,
+    EGL_GREEN_SIZE, 1,
+    EGL_BLUE_SIZE, 1,
+    EGL_ALPHA_SIZE, 0,
+    EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+    EGL_NONE
+};
 
-void page_flip_handler(int fd, unsigned int sequence, unsigned int tv_sec, unsigned int tv_usec, void *user_data)
-{
-    printf("%u %u %u\n", sequence, tv_sec, tv_usec);
-}
+struct drm_fb {
+	struct gbm_bo *bo;
+	uint32_t fb_id;
+};
 
 void add_to_list(int fd, int epfd)
 {
@@ -60,156 +47,9 @@ void add_to_list(int fd, int epfd)
     epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &event);
 }
 
-
-
-void delete_cursor(int m_pos_x, int m_pos_y, int width ,char *framebuffer)
+void page_flip_handler(int fd, unsigned int sequence, unsigned int tv_sec, unsigned int tv_usec, void *user_data)
 {
-    for (int x = m_pos_x; x < m_pos_x + 10; x++)
-    {
-        for (int y = m_pos_y; y < m_pos_y + 10; y++)
-        {
-            int pxl_index = (x + width * y) * 4;
-
-            framebuffer[pxl_index] = 0;
-            pxl_index++;
-            framebuffer[pxl_index] = 0;
-            pxl_index++;
-            framebuffer[pxl_index] = 0;
-            pxl_index++;
-            framebuffer[pxl_index] = 255;
-            pxl_index++;
-        }
-    }
-}
-
-void draw_cursor(int m_pos_x, int m_pos_y, int width ,char *framebuffer)
-{
-    for (int x = m_pos_x; x < m_pos_x + 10; x++)
-    {
-        for (int y = m_pos_y; y < m_pos_y + 10; y++)
-        {
-            int pxl_index = (x + width * y) * 4;
-
-            framebuffer[pxl_index] = 255;
-            pxl_index++;
-            framebuffer[pxl_index] = 255;
-            pxl_index++;
-            framebuffer[pxl_index] = 255;
-            pxl_index++;
-            framebuffer[pxl_index] = 255;
-            pxl_index++;
-        }
-    }
-}
-
-float lerp(float v0, float v1, float t) 
-{
-    return (1 - t) * v0 + t * v1;
-}
-
-void mouse_read()
-{
-    int fd;
-    if ((fd = open("/dev/input/mice", O_RDONLY)) < 0) 
-    {
-        printf("Cant open mouse\n");
-        exit(1);
-    }
-    int epfd = epoll_create1(0);
-    add_to_list(fd, epfd);
-    int events_ready = 0;
-    struct epoll_event events[1024];
-    char buf[1024] = {0};
-    signed char y_mov = 0;
-    signed char x_mov = 0;
-    unsigned char button_state = 0;
-    while(1) 
-    {
-        int status = 0;
-        events_ready = epoll_wait(epfd, events, 1024, -1);
-        for (int i = 0; i < events_ready;i++)
-        {
-            status = read(fd, buf, 4);
-            if (status <= 0)
-            {
-                printf("Mouse handler crashed! Read failed\n");
-                return;
-            }
-            button_state = buf[0];
-            y_mov = buf[1];
-            x_mov = buf[2];
-            
-            if ((button_state & 0b1) != 0)
-                printf("Left mouse button pressed\n");
-            if ((button_state & 0b10) != 0)
-                printf("Right mouse button pressed\n");
-            if ((button_state & 0b100) != 0)
-                printf("Middle mouse button pressed\n");
-
-            next_mouse.x = next_mouse.x + y_mov;
-            next_mouse.y = next_mouse.y + (x_mov * -1);
-
-            if (next_mouse.x < 0)
-                next_mouse.x = 0;
-            else if (next_mouse.x > width - 10)
-                next_mouse.x = width - 10;
-            if (next_mouse.y < 0)
-                next_mouse.y = 0;
-            else if (next_mouse.y > height - 10)
-                next_mouse.y = height - 10;
-            //printf("x %f y %f\n",mouse_position_x, mouse_position_y);
-	        //printf("x_mov %i y_mov %i\n", (int)y_mov, (int)x_mov);
-            
-        }
-        memset(buf, 0, 4);
-    }
-}
-
-void keyboard_read()
-{
-    int fd = -2;
-    for (const auto & entry : std::filesystem::directory_iterator("/dev/input/by-id"))
-    {
-        if (strstr(entry.path().filename().c_str(), "Keyboard") != NULL && strstr(entry.path().filename().c_str(), "kbd") != NULL)
-        {
-            fd = open(entry.path().c_str(), O_RDONLY);
-            break;
-        }
-    }
-    if (fd == -2)
-    {
-        for (const auto & entry : std::filesystem::directory_iterator("/dev/input/by-path"))
-        {
-            if (strstr(entry.path().filename().c_str(), "kbd") != NULL)
-            {
-                fd = open(entry.path().c_str(), O_RDONLY);
-                break;
-            }
-        }
-    }
-    if (fd < 0)
-    {
-        printf("Opening a keyboard failed!\n");
-        return;
-    }
-    input_event ev = {0};
-    int index = 0;
-    int status = 0;
-    while (1)
-    {
-        status = read(fd, &ev, sizeof(struct input_event));
-        if (ev.type == EV_KEY) 
-        {
-            if (ev.value == 1) 
-            {
-                printf("Key %d pressed\n", ev.code);
-            } 
-            else if (ev.value == 0) 
-            {
-                printf("Key %d released\n", ev.code);
-            }
-        }
-    }
+    printf("%u %u %u\n", sequence, tv_sec, tv_usec);
 }
 
 void wait_ep(int epfd, int fd)
@@ -223,31 +63,63 @@ void wait_ep(int epfd, int fd)
     drmHandleEvent(fd, &evctx);
 }
 
-int main(int argc, char *argv[])
+static void drm_fb_destroy_callback(struct gbm_bo *bo, void *data)
 {
-    using clock = std::chrono::system_clock;
-    using ms = std::chrono::duration<double, std::milli>;
-    int target_refresh = 60;
-    if (argc > 1)
-    {
-        for (int i = 1; i < argc; i++)
-        {
-            if (strcmp(argv[i], "-r") == 0 && i + 1 < argc)
-            {
-                target_refresh = atoi(argv[i+1]);
-            }
-        }
-    }
-    int fd = open("/dev/dri/card1", O_RDWR | O_NONBLOCK);
+	struct drm_fb *fb = (drm_fb *)data;
+	struct gbm_device *gbm = gbm_bo_get_device(bo);
 
-    if (fd < 0)
-    {
-        printf("Fail\n");
-        return -1;
-    }
-    printf("Success %i\n", fd);
+	if (fb->fb_id)
+		drmModeRmFB(drmfb, fb->fb_id);
 
-    drmModeResPtr res =  drmModeGetResources(fd);
+	free(fb);
+}
+
+static struct drm_fb * drm_fb_get_from_bo(struct gbm_bo *bo)
+{
+	struct drm_fb *fb = (drm_fb *)gbm_bo_get_user_data(bo);
+	uint32_t width, height, stride, handle;
+	int ret;
+
+	if (fb)
+		return fb;
+
+	fb = (drm_fb *)calloc(1, sizeof *fb);
+	fb->bo = bo;
+
+	width = gbm_bo_get_width(bo);
+	height = gbm_bo_get_height(bo);
+	stride = gbm_bo_get_stride(bo);
+	handle = gbm_bo_get_handle(bo).u32;
+
+	ret = drmModeAddFB(drmfb, width, height, 24, 32, stride, handle, &fb->fb_id);
+	if (ret) {
+		printf("failed to create fb: %s\n", strerror(errno));
+		free(fb);
+		return NULL;
+	}
+
+	gbm_bo_set_user_data(bo, fb, drm_fb_destroy_callback);
+
+	return fb;
+}
+
+int main()
+{
+    EGLint major, minor, n;
+    struct gbm_bo *bo;
+    uint32_t width, height, stride, handle;
+    int target_refresh = 165;
+    struct drm_fb *fb;
+    srand((unsigned int)time(NULL));
+	drmfb = open("/dev/dri/card0", O_RDWR | O_NONBLOCK);
+
+	if (drmfb <= 0)
+	{
+		printf("Opening device failed\n");
+		return -1;
+	}
+	struct gbm_device *gbm_dev = gbm_create_device(drmfb);
+    drmModeResPtr res =  drmModeGetResources(drmfb);
 
     if (res == NULL)
     {
@@ -259,26 +131,20 @@ int main(int argc, char *argv[])
     drmModeConnectorPtr conn = NULL;
     for (int i = 0; i < res->count_connectors;i++)
     {
-        conn = drmModeGetConnectorCurrent(fd, res->connectors[i]);
+        conn = drmModeGetConnectorCurrent(drmfb, res->connectors[i]);
         if (conn->connection == DRM_MODE_CONNECTED)
             break;
-        printf("Connector is %s-%u height %i width %i\n", drmModeGetConnectorTypeName(conn->connector_type), conn->connector_type_id, conn->mmHeight, conn->mmWidth);
     }
+    printf("Connector is %s-%u height %i width %i\n", drmModeGetConnectorTypeName(conn->connector_type), conn->connector_type_id, conn->mmHeight, conn->mmWidth);
     for (int i = 0; i < conn->count_modes; i++) 
     {
         if (conn->modes[i].type & DRM_MODE_TYPE_PREFERRED)
         {
             height = conn->modes[i].vdisplay;
-            width = conn->modes[i].hdisplay;
+                width = conn->modes[i].hdisplay;
             break;
         }
     }
-    next_mouse.x = width/2;
-    next_mouse.y = height/2;
-    prev_mouse_fb1 = next_mouse;
-    prev_mouse_fb2 = next_mouse;
-    prev_mouse_abs = next_mouse;
-    target_mouse = next_mouse;
     drmModeModeInfoPtr resolution = 0;
     for (int i = 0; i < conn->count_modes; i++) 
     {
@@ -287,124 +153,88 @@ int main(int argc, char *argv[])
             break;
     }
     printf("Refresh rate is %ihz\n", resolution->vrefresh);
-    drmModeFB *FB1 = (drmModeFB *)malloc(sizeof(drmModeFB));
-    drmModeFB *FB2 = (drmModeFB *)malloc(sizeof(drmModeFB));
-    unsigned long size = 0;
-    unsigned int handle2 = 0;
-    unsigned int pitch2 = 0;
-    unsigned long size2 = 0;
-    
-    int err = drmModeCreateDumbBuffer(fd, width, height, 32, 0, &FB1->handle, &FB1->pitch, &size);
-    if (err < 0)
+	struct gbm_surface *gbm_s = gbm_surface_create(
+	    gbm_dev, 
+	    width, 
+	    height, 
+	    GBM_FORMAT_ABGR8888,0
+	);
+    if (!gbm_s)
     {
-        printf("Failed creating framebuffer %i\n", err);
-        return -1;
+        printf("Failed to create gbm surface %s\n", strerror(errno));
     }
-    err = drmModeCreateDumbBuffer(fd, width, height, 32, 0, &FB2->handle, &FB2->pitch, &size2);
-    if (err < 0)
+    PFNEGLGETPLATFORMDISPLAYEXTPROC get_platform_display = NULL;
+	get_platform_display = (PFNEGLGETPLATFORMDISPLAYEXTPROC) eglGetProcAddress("eglGetPlatformDisplayEXT");
+    EGLDisplay gl_display = get_platform_display(EGL_PLATFORM_GBM_KHR, gbm_dev, NULL);
+	if (!eglInitialize(gl_display, &major, &minor)) 
     {
-        printf("Failed creating framebuffer 2 %i\n", err);
-        return -1;
-    }
-    printf("Handle %i, pitch %i, size %u\n", FB1->handle, FB1->pitch, size);
-    unsigned int buffer_id = 0;
-    unsigned int buffer_id2 = 0;
-    err = drmModeAddFB(fd, width, height, 24, 32, FB1->pitch, FB1->handle, &FB1->fb_id);
-    if (err < 0)
+		printf("failed to initialize egl\n");
+		return -1;
+	}
+	printf("Using display %p with EGL version %d.%d\n",gl_display, major, minor);
+	if (!eglBindAPI(EGL_OPENGL_ES_API)) 
     {
-        printf("Failed creating framebuffer %i\n", err);
-        return -1;
-    }
-    err = drmModeAddFB(fd, width, height, 24, 32, FB2->pitch, FB2->handle, &FB2->fb_id);
-    if (err < 0)
+		printf("failed to bind api EGL_OPENGL_ES_API\n");
+		return -1;
+	}
+    EGLConfig gl_config;
+	if (!eglChooseConfig(gl_display, config_attribs, &gl_config, 1, &n) || n != 1) 
     {
-        printf("Failed creating framebuffer %i\n", err);
-        return -1;
-    }
-    
-    drmModeEncoderPtr encoder =  drmModeGetEncoder(fd, conn->encoder_id);
-    drmModeCrtcPtr crtc = drmModeGetCrtc(fd, encoder->crtc_id);
-    unsigned long offset = 0;
-    unsigned long offset2 = 0;
-    drmModeMapDumbBuffer(fd, FB1->handle, &offset);
-    drmModeMapDumbBuffer(fd, FB2->handle, &offset2);
-    char *frame_buffer1 = (char *)mmap(0, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, offset);
-    if (frame_buffer1 == MAP_FAILED)
+		printf("failed to choose config: %d\n", n);
+		return -1;
+	}
+	EGLContext gl_context = eglCreateContext(gl_display, gl_config,EGL_NO_CONTEXT, context_attribs);
+	if (gl_context == NULL) 
     {
-        printf("Mapping failed\n");
-        return -1;
-    }
-    char *frame_buffer2 = (char *)mmap(0, size2, PROT_READ | PROT_WRITE, MAP_SHARED, fd, offset2);
-    if (frame_buffer2 == MAP_FAILED)
+		printf("failed to create egl context\n");
+		return -1;
+	}
+
+	EGLSurface gl_surface = eglCreateWindowSurface(gl_display, gl_config, gbm_s, NULL);
+	if (gl_surface == EGL_NO_SURFACE) 
     {
-        printf("Mapping failed\n");
-        return -1;
-    }
-    if (drmSetMaster(fd)!= 0)
-    {
-        printf("Setting to master failed\n");
-        return 0;
-    }
-    //drmModeSetCrtc(fd, crtc->crtc_id, 0, 0, 0, NULL, 0, NULL);
-    drmModeSetCrtc(fd, crtc->crtc_id, FB1->fb_id, 0, 0, &conn->connector_id, 1, resolution);
-    drmEventContext evctx = {
-        .version = DRM_EVENT_CONTEXT_VERSION,
-        .page_flip_handler = page_flip_handler,
-    };
-    int frames_to_write = 0;
-    int main_fb = 1;
-    int ev = 1;
-    std::thread mouse_th(mouse_read);
-    mouse_th.detach();
-    std::thread kbd_th(keyboard_read);
-    kbd_th.detach();
-    int epfd = epoll_create1(0);
-    add_to_list(fd, epfd);
-    int events_ready = 0;
-    struct epoll_event events[1024];
+		printf("failed to create egl surface\n");
+		return -1;
+	}
+    eglMakeCurrent(gl_display, gl_surface, gl_surface, gl_context);
+
+    glClearColor(1.0, 1.0, 1.0, 1.0);
+	glClear(GL_COLOR_BUFFER_BIT);
+	eglSwapBuffers(gl_display, gl_surface);
+
+    bo = gbm_surface_lock_front_buffer(gbm_s);
+    fb = drm_fb_get_from_bo(bo);
+
+    drmModeEncoderPtr encoder =  drmModeGetEncoder(drmfb, conn->encoder_id);
+    drmModeCrtcPtr crtc = drmModeGetCrtc(drmfb, encoder->crtc_id);
+
+	drmModeSetCrtc(drmfb, crtc->crtc_id, fb->fb_id, 0, 0, &conn->connector_id, 1, resolution);
     int f_number = 0;
+    int epfd = epoll_create1(0);
+    int ev = 1;
+    add_to_list(drmfb, epfd);
+    GLfloat r = 0.2f, g = 0.3f, b = 0.4f;
+
     while (1)
     {
+        struct gbm_bo *next_bo;
         printf("Frame: %i\n", f_number);
-        
-        if (main_fb == 1)
+        if (f_number%target_refresh == 0 || f_number == 0)
         {
-            delete_cursor(prev_mouse_fb2.x, prev_mouse_fb2.y, width, frame_buffer2);
-            float new_x = lerp(prev_mouse_abs.x, target_mouse.x, lerp_t);
-            float new_y = lerp(prev_mouse_abs.y, target_mouse.y, lerp_t);
-            draw_cursor(new_x, new_y, width, frame_buffer2);
-            prev_mouse_fb2.x = new_x;
-            prev_mouse_fb2.y = new_y;
-            // first frame doesnt need to wait for the last frame to be completed
-            if (f_number > 0)
-                wait_ep(epfd, fd);
-            printf("page flip returned %i\n", drmModePageFlip(fd, crtc->crtc_id, FB2->fb_id, DRM_MODE_PAGE_FLIP_EVENT, &ev));
-            main_fb = 2;
+            r = ((float)rand()/(float)(RAND_MAX)) * 1.0;
+            g = ((float)rand()/(float)(RAND_MAX)) * 1.0;
+            b = ((float)rand()/(float)(RAND_MAX)) * 1.0;
         }
-        else if (main_fb == 2)
-        {
-            delete_cursor(prev_mouse_fb1.x, prev_mouse_fb1.y, width, frame_buffer1);
-            float new_x = lerp(prev_mouse_abs.x, target_mouse.x, lerp_t);
-            float new_y = lerp(prev_mouse_abs.y, target_mouse.y, lerp_t);
-            draw_cursor(new_x, new_y, width, frame_buffer1);
-            prev_mouse_fb1.x = new_x;
-            prev_mouse_fb1.y = new_y;
-            wait_ep(epfd, fd);
-            printf("page flip returned %i\n", drmModePageFlip(fd, crtc->crtc_id, FB1->fb_id, DRM_MODE_PAGE_FLIP_EVENT, &ev));
-            main_fb = 1;
-        } 
-        lerp_t += 0.5f;
-        if (lerp_t >= 1.0f)
-        {
-            prev_mouse_abs = target_mouse;
-            target_mouse = next_mouse;
-            lerp_t = 0.0f;
-        }
+        glClear(GL_COLOR_BUFFER_BIT);
+        glClearColor(r, g, b, 1.0f);
+        eglSwapBuffers(gl_display, gl_surface);
+		next_bo = gbm_surface_lock_front_buffer(gbm_s);
+		fb = drm_fb_get_from_bo(next_bo);
+        drmModePageFlip(drmfb, crtc->crtc_id, fb->fb_id, DRM_MODE_PAGE_FLIP_EVENT, &ev);
+        wait_ep(epfd, drmfb);
+		
+		gbm_surface_release_buffer(gbm_s, bo);
+		bo = next_bo;
         f_number++;
     }
-    drmModeFreeCrtc(crtc);
-    munmap(frame_buffer1, size);
-    munmap(frame_buffer2, size);
-    drmDropMaster(fd);
-    return 0;
 }
