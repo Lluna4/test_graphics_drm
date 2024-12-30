@@ -8,11 +8,6 @@
 #include <errno.h>
 #include <string.h>
 #include <sys/epoll.h>
-#include <fstream>
-#include <sstream>
-#include <fcntl.h>
-#include <unistd.h>
-#include <thread>
 
 #define GL_GLEXT_PROTOTYPES 1
 #include <GLES2/gl2.h>
@@ -23,7 +18,6 @@
 int height = 0;
 int width = 0; 
 int drmfb = 0;
-float lerp_t = 1.0f;
 
 static const EGLint context_attribs[] = {
     EGL_CONTEXT_CLIENT_VERSION, 2,
@@ -39,18 +33,6 @@ static const EGLint config_attribs[] = {
     EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
     EGL_NONE
 };
-
-struct position
-{
-    float x, y;
-};
-
-GLuint program;
-GLint cursor_location;
-GLint screen_size_location;
-position prev_mouse_abs = {0};
-position target_mouse = {0};
-position next_mouse = {0};
 
 struct drm_fb {
 	struct gbm_bo *bo;
@@ -119,82 +101,6 @@ static struct drm_fb * drm_fb_get_from_bo(struct gbm_bo *bo)
 	gbm_bo_set_user_data(bo, fb, drm_fb_destroy_callback);
 
 	return fb;
-}
-
-GLuint compile_shader(GLenum type, const char* source) 
-{
-    GLuint shader = glCreateShader(type);
-    glShaderSource(shader, 1, &source, NULL);
-    glCompileShader(shader);
-    
-    GLint status;
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
-    if (status == GL_FALSE) 
-    {
-        GLint length;
-        glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &length);
-        char* info = new char[length];
-        glGetShaderInfoLog(shader, length, NULL, info);
-        printf("Shader compilation failed: %s\n", info);
-        delete[] info;
-        return 0;
-    }
-    return shader;
-}
-
-void mouse_read()
-{
-    int fd;
-    if ((fd = open("/dev/input/mice", O_RDONLY)) < 0) 
-    {
-        printf("Cant open mouse\n");
-        exit(1);
-    }
-    int epfd = epoll_create1(0);
-    add_to_list(fd, epfd);
-    int events_ready = 0;
-    struct epoll_event events[1024];
-    char buf[1024] = {0};
-    signed char y_mov = 0;
-    signed char x_mov = 0;
-    unsigned char button_state = 0;
-    while(1) 
-    {
-        int status = 0;
-        events_ready = epoll_wait(epfd, events, 1024, -1);
-        for (int i = 0; i < events_ready;i++)
-        {
-            status = read(fd, buf, 4);
-            if (status <= 0)
-            {
-                printf("Mouse handler crashed! Read failed\n");
-                return;
-            }
-            button_state = buf[0];
-            y_mov = buf[1];
-            x_mov = buf[2];
-            
-            if ((button_state & 0b1) != 0)
-                printf("Left mouse button pressed\n");
-            if ((button_state & 0b10) != 0)
-                printf("Right mouse button pressed\n");
-            if ((button_state & 0b100) != 0)
-                printf("Middle mouse button pressed\n");
-
-            next_mouse.x = next_mouse.x + y_mov;
-            next_mouse.y = next_mouse.y + (x_mov * -1);
-            //printf("x %f y %f\n",mouse_position_x, mouse_position_y);
-	        printf("x_mov %i y_mov %i\n", (int)y_mov, (int)x_mov);
-            printf("next_mouse x %i next_mouse y %i\n", (int)next_mouse.x, (int)next_mouse.y);
-            
-        }
-        memset(buf, 0, 4);
-    }
-}
-
-float lerp(float v0, float v1, float t) 
-{
-    return (1 - t) * v0 + t * v1;
 }
 
 int main()
@@ -292,37 +198,6 @@ int main()
 	}
     eglMakeCurrent(gl_display, gl_surface, gl_surface, gl_context);
 
-    std::ifstream t("vertex.glsl");
-    std::stringstream vert_shader;
-    vert_shader << t.rdbuf();
-
-    std::ifstream t2("fragment.glsl");
-    std::stringstream frag_shader;
-    frag_shader << t2.rdbuf();
-    
-    GLuint vertex_shader = compile_shader(GL_VERTEX_SHADER, vert_shader.str().c_str());
-    GLuint fragment_shader = compile_shader(GL_FRAGMENT_SHADER, frag_shader.str().c_str());
-
-    program = glCreateProgram();
-    glAttachShader(program, vertex_shader);
-    glAttachShader(program, fragment_shader);
-    glLinkProgram(program);
-    
-
-    cursor_location = glGetAttribLocation(program, "a_Position");
-    screen_size_location = glGetUniformLocation(program, "u_ScreenSize");
-
-    
-    GLuint vbo;
-    glGenBuffers(1, &vbo);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    next_mouse.x = width/2;
-    next_mouse.y = height/2;
-    prev_mouse_abs = next_mouse;
-    target_mouse = next_mouse;
-    std::thread m_read(mouse_read);
-    m_read.detach();
-
     glClearColor(1.0, 1.0, 1.0, 1.0);
 	glClear(GL_COLOR_BUFFER_BIT);
 	eglSwapBuffers(gl_display, gl_surface);
@@ -338,31 +213,20 @@ int main()
     int epfd = epoll_create1(0);
     int ev = 1;
     add_to_list(drmfb, epfd);
-    GLfloat r = 0.0f, g = 0.0f, b = 0.0f;
+    GLfloat r = 0.2f, g = 0.3f, b = 0.4f;
+
     while (1)
     {
         struct gbm_bo *next_bo;
         printf("Frame: %i\n", f_number);
+        if (f_number%target_refresh == 0 || f_number == 0)
+        {
+            r = ((float)rand()/(float)(RAND_MAX)) * 1.0;
+            g = ((float)rand()/(float)(RAND_MAX)) * 1.0;
+            b = ((float)rand()/(float)(RAND_MAX)) * 1.0;
+        }
         glClear(GL_COLOR_BUFFER_BIT);
         glClearColor(r, g, b, 1.0f);
-        glUseProgram(program);
-        glUniform2f(screen_size_location, (float)width, (float)height);
-        float new_x = lerp(prev_mouse_abs.x, target_mouse.x, lerp_t);
-        float new_y = lerp(prev_mouse_abs.y, target_mouse.y, lerp_t);
-        float vertices[] = 
-        {
-            new_x, new_y,
-            new_x + 50, new_y,
-            new_x, new_y + 50,
-            new_x + 50, new_y + 50
-        };
-        // Update the vertex buffer
-        glBindBuffer(GL_ARRAY_BUFFER, vbo);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
-        glEnableVertexAttribArray(cursor_location);
-        glVertexAttribPointer(cursor_location, 2, GL_FLOAT, GL_FALSE, 0, 0);
-        
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         eglSwapBuffers(gl_display, gl_surface);
 		next_bo = gbm_surface_lock_front_buffer(gbm_s);
 		fb = drm_fb_get_from_bo(next_bo);
@@ -372,12 +236,5 @@ int main()
 		gbm_surface_release_buffer(gbm_s, bo);
 		bo = next_bo;
         f_number++;
-        lerp_t += 0.5f;
-        if (lerp_t >= 1.0f)
-        {
-            prev_mouse_abs = target_mouse;
-            target_mouse = next_mouse;
-            lerp_t = 0.0f;
-        }
     }
 }
