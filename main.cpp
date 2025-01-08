@@ -13,6 +13,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <thread>
+#include <filesystem>
+#include <linux/input.h>
 
 #define GL_GLEXT_PROTOTYPES 1
 #include <GLES2/gl2.h>
@@ -192,17 +194,81 @@ void mouse_read()
     }
 }
 
+void keyboard_read()
+{
+    int fd = -2;
+    for (const auto & entry : std::filesystem::directory_iterator("/dev/input/by-id"))
+    {
+        if (strstr(entry.path().filename().c_str(), "Keyboard") != NULL && strstr(entry.path().filename().c_str(), "kbd") != NULL)
+        {
+            fd = open(entry.path().c_str(), O_RDONLY);
+            break;
+        }
+    }
+    if (fd == -2)
+    {
+        for (const auto & entry : std::filesystem::directory_iterator("/dev/input/by-path"))
+        {
+            if (strstr(entry.path().filename().c_str(), "kbd") != NULL)
+            {
+                fd = open(entry.path().c_str(), O_RDONLY);
+                break;
+            }
+        }
+    }
+    if (fd < 0)
+    {
+        printf("Opening a keyboard failed!\n");
+        return;
+    }
+    input_event ev = {0};
+    int index = 0;
+    int status = 0;
+    while (1)
+    {
+        status = read(fd, &ev, sizeof(struct input_event));
+        if (ev.type == EV_KEY) 
+        {
+            if (ev.value == 1) 
+            {
+                printf("Key %d pressed\n", ev.code);
+            } 
+            else if (ev.value == 0) 
+            {
+                printf("Key %d released\n", ev.code);
+            }
+        }
+    }
+}
+
 float lerp(float v0, float v1, float t) 
 {
     return (1 - t) * v0 + t * v1;
 }
 
-int main()
+int main(int argc, char *argv[])
 {
     EGLint major, minor, n;
     struct gbm_bo *bo;
     uint32_t width, height, stride, handle;
-    int target_refresh = 165;
+	int target_refresh = 60;
+    if (argc > 1)
+    {
+		if (*argv[1] == '-' && argv[1][1] == 'r')
+		{
+				if (argc > 2)
+				{
+                    target_refresh = atoi(argv[2]);
+                    if (target_refresh == 0)
+                            target_refresh = 60;
+				}
+				else
+				{
+					printf("invalid command! You must leave an space between -r and the number, for example (-r 144)\n");
+				}
+		}
+	}
+	printf("Target refresh is %i\n", target_refresh);
     struct drm_fb *fb;
     srand((unsigned int)time(NULL));
 	drmfb = open("/dev/dri/card0", O_RDWR | O_NONBLOCK);
@@ -322,6 +388,8 @@ int main()
     target_mouse = next_mouse;
     std::thread m_read(mouse_read);
     m_read.detach();
+    std::thread kbd_th(keyboard_read);
+    kbd_th.detach();
 
     glClearColor(1.0, 1.0, 1.0, 1.0);
 	glClear(GL_COLOR_BUFFER_BIT);
@@ -352,9 +420,9 @@ int main()
         float vertices[] = 
         {
             new_x, new_y,
-            new_x + 50, new_y,
-            new_x, new_y + 50,
-            new_x + 50, new_y + 50
+            new_x + 10, new_y,
+            new_x, new_y + 10,
+            new_x + 10, new_y + 10
         };
         // Update the vertex buffer
         glBindBuffer(GL_ARRAY_BUFFER, vbo);
